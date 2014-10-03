@@ -16,15 +16,17 @@ def merge(inputpdfs, outputpdf, two_per_page)
 	concatFilenames = Array.new # names of files to add to the output pdf
 	deleteFilenames = Array.new # names of files to remove after output pdf is generated (files with blank page added to them)
 	if two_per_page then
-		puts 'Padding single pdfs'
-		padded_singles = make_padded(inputpdfs)
+		#puts 'Padding single pdfs'
+		#padded_singles = make_padded(inputpdfs)
 		begin
-			puts padded_singles[:filenames]
+			#puts padded_singles[:filenames]
 			puts 'Creating double pdfs'
 			nup_input = ['--nup','2x1','--landscape','--frame','false','--batch']
-			nup_input = nup_input + padded_singles[:filenames]
+			#nup_input = nup_input + padded_singles[:filenames]
+			nup_input = nup_input + inputpdfs
 			execute(PdfNup,*nup_input)
-			doubles = padded_singles[:filenames].map { |single_filename|
+			#doubles = padded_singles[:filenames].map { |single_filename|
+			doubles = inputpdfs.map { |single_filename|
 				basename = single_filename.gsub(/\.pdf\z/,'') # remove .pdf
 				basename = File.basename(basename) # remove path, keep only base name
 				"#{basename}-nup.pdf" # add -nup.pdf and return
@@ -57,7 +59,7 @@ def merge(inputpdfs, outputpdf, two_per_page)
 			puts "Error occured after padding single pages - cleaning up"
 			raise e
 		ensure
-			padded_singles[:tmp_files].each { |f| puts "Deleting #{f}"; File.delete f }
+			#padded_singles[:tmp_files].each { |f| puts "Deleting #{f}"; File.delete f }
 		end
 	else
 		padded_singles = make_padded(inputpdfs)
