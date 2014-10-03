@@ -2,6 +2,8 @@
 # encoding: utf-8
 require 'open3.rb'
 require 'tempfile'
+PdfNup = `which pdfnup`.chomp #'pdfnup'
+if PdfNup == '' then puts 'Dpeendency pdfnup not satisfied'; exit; end
 PdfTK = `which pdftk`.chomp #'pdftk'
 if PdfTK == '' then puts 'Dependency pdftk not satisfied'; exit; end
 #PdfInfo = `which pdfinfo`.chomp #'pdfinfo'
@@ -10,24 +12,81 @@ Name = File.basename(__FILE__)
 Version = '1.1'
 WrapLimit = [`tput cols`.to_i,60].min
 
-def merge(inputpdfs, outputpdf)
+def merge(inputpdfs, outputpdf, two_per_page)
 	concatFilenames = Array.new # names of files to add to the output pdf
 	deleteFilenames = Array.new # names of files to remove after output pdf is generated (files with blank page added to them)
-	inputpdfs.first(inputpdfs.length - 1).each { |inputName|
-		evenName = makeEvenPdf(inputName)
-		if inputName != evenName then
-			puts "Added empty page to #{inputName}"
-			deleteFilenames << evenName 
+	if two_per_page then
+		puts 'Padding single pdfs'
+		padded_singles = make_padded(inputpdfs)
+		begin
+			puts padded_singles[:filenames]
+			puts 'Creating double pdfs'
+			nup_input = ['--nup','2x1','--landscape','--frame','false','--batch']
+			nup_input = nup_input + padded_singles[:filenames]
+			execute(PdfNup,*nup_input)
+			doubles = padded_singles[:filenames].map { |single_filename|
+				basename = single_filename.gsub(/\.pdf\z/,'') # remove .pdf
+				basename = File.basename(basename) # remove path, keep only base name
+				"#{basename}-nup.pdf" # add -nup.pdf and return
+			}
+			begin
+				puts "Input filenames: "
+				puts doubles
+				#puts 'moo'
+				padded_doubles = make_padded(doubles)
+				begin
+					puts padded_doubles[:filenames]
+					puts 'Concatenating files'
+					pdftk_input = padded_doubles[:filenames].dup
+					pdftk_input << 'cat' << 'output' << outputpdf
+					execute(PdfTK,*pdftk_input)
+					puts 'Removing temporary files'
+				rescue Exception => e
+					puts "Error occured after padding double pages - cleaning up"
+					raise e
+				ensure
+					padded_doubles[:tmp_files].each { |f| puts "Deleting #{f}"; File.delete f }
+				end
+			rescue Exception => e
+				puts 'Error occured after converting double to single pages - cleaning up'
+				raise e
+			ensure
+				doubles.each { |f| puts "Deleting #{f}"; File.delete f }
+			end
+		rescue Exception => e
+			puts "Error occured after padding single pages - cleaning up"
+			raise e
+		ensure
+			padded_singles[:tmp_files].each { |f| puts "Deleting #{f}"; File.delete f }
 		end
-		concatFilenames << evenName
+	else
+		padded_singles = make_padded(inputpdfs)
+		puts 'Concatenating files'
+		pdftk_input = padded_singles[:filenames].dup
+		pdftk_input << 'cat' << 'output' << outputpdf
+		execute(PdfTK,*pdftk_input)
+		puts 'Removing temporary files'
+		padded_singles[:tmp_files].each { |f| File.delete f }
+	end
+end
+
+def make_padded(input_pdfs)
+	padded_filenames = Array.new
+	delete_filenames = Array.new
+	# Add white page to all but the last file (does not need to be padded)
+	input_pdfs.first(input_pdfs.length - 1).each { |input_name|
+		even_name = makeEvenPdf(input_name)
+		if input_name != even_name then
+			puts "Added empty page to #{input_name}"
+			delete_filenames << even_name 
+		end
+		padded_filenames << even_name
 	}
-	concatFilenames << inputpdfs.last
-	# Add cat and output because we cannot use splat as anything but the
-	# last argument in old versions of Ruby
-	concatFilenames << 'cat' << 'output' << outputpdf
-	execute(PdfTK,*concatFilenames)
-	puts 'Removing temporary files'
-	deleteFilenames.each { |f| File.delete f }
+	padded_filenames << input_pdfs.last
+	return {
+		:filenames => padded_filenames,
+		:tmp_files => delete_filenames
+	}
 end
 
 def getEmptyPdf(dim1,dim2)
@@ -162,6 +221,8 @@ def makeEvenPdf(filename)
 			t = Tempfile.new(filename);
 			newfilename = t.path
 			t.close; t.unlink;
+			# Some programs require the pdf file to end with ".pdf"
+			newfilename += ".pdf"
 			execute *%W(#{PdfTK} A=#{filename} B=#{tempfile.path} cat A B output #{newfilename})
 			return newfilename
 		ensure
@@ -176,9 +237,14 @@ def execute(*arguments)
 	# stdout_str, status = Open3.capture2(*arguments)
 	Open3.popen3(*arguments) {|i,o,e|
 		out = o.read.chomp
+		err = e.read.chomp
+		unless err.empty? then
+			#puts err
+			#throw :moo
+		end
+		#puts out
 		return out;	
 	}
-	throw :moo
 	#stdout_str = stdin.read
 end
 
@@ -201,7 +267,7 @@ def puts_wrapped(text)
 end
 
 
-if ARGV.grep("--help").length > 0 then
+def print_help
 	print "#{Name} #{Version} by Jonathan Merlevede\n" <<
 	      "Usage:\t#{Name} output[.pdf]\n" <<
 	      "\t#{Name} input1[.pdf] input2[.pdf] ... output[.pdf]\n\n"
@@ -216,12 +282,23 @@ if ARGV.grep("--help").length > 0 then
 		'processes all PDFs in the active directory.'
 	puts ''
 	puts "Dependencies: pdftk"
+end
+
+
+if ARGV.grep("--help").length > 0 then
+	print_help
 	exit
 end
 if ARGV.length < 1 then
 	puts "You need to specify an output file"
 	exit
 end
+
+two_per_page = (ARGV.include? '-2') ? true : false
+if two_per_page then
+	ARGV.delete '-2'
+end
+
 output = ARGV.last.dup
 output << '.pdf' unless output.end_with?('.pdf')
 puts "Output file: #{output}"
@@ -246,6 +323,7 @@ else
 	}
 end
 input.map{|t| t << '.pdf' unless t.end_with?('.pdf')}
+input.delete output
 
 puts "Input files: #{input.join(', ')}"
-merge(input, output)
+merge(input, output, two_per_page)
